@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "ExcelExport": {
+      "commandName": "Project",
+      "commandLineArgs": "test.lua"
+    }
+  }
+}

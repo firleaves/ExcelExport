@@ -1,66 +1,158 @@
-﻿using Excel;
+﻿using ExcelDataReader;
 using System;
 using System.Collections.Generic;
 using System.Data;
 using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using System.Windows.Forms;
+using XLua;
+
+using LuaAPI = XLua.LuaDLL.Lua;
+using RealStatePtr = System.IntPtr;
+using LuaCSFunction = XLua.LuaDLL.lua_CSFunction;
 
 namespace ExcelExport
 {
-    class ExcelReader
+    public class ExcelReader
     {
-        public List<string> SheetNameList = new List<string>();
-        DataSet dataSet;
-        public bool Read(string filePath, bool hdr = true)
+        public delegate void TypePush(RealStatePtr L, object o);
+
+        static void PushBool(RealStatePtr L, object o)
         {
+            bool v = (bool)o;
+            LuaAPI.lua_pushboolean(L, v);
+        }
+        static void PushInt(RealStatePtr L, object o)
+        {
+            int v = (int)o;
+            LuaAPI.lua_pushint64(L, v);
+        }
+
+        static void PushLong(RealStatePtr L, object o)
+        {
+            long v = (long)o;
+            LuaAPI.lua_pushint64(L, v);
+        }
+
+        static void PushUInt(RealStatePtr L, object o)
+        {
+            uint v = (uint)o;
+            LuaAPI.lua_pushint64(L, v);
+        }
+
+        static void PushULong(RealStatePtr L, object o)
+        {
+            ulong v = (ulong)o;
+            LuaAPI.lua_pushint64(L, (long)v);
+        }
+
+        static void PushFloat(RealStatePtr L, object o)
+        {
+            float v = (float)o;
+            long lv = (long)v;
+            if (lv == v)
+            {
+                LuaAPI.lua_pushint64(L, lv);
+            }
+            else
+            {
+                LuaAPI.lua_pushnumber(L, v);
+            }
+        }
+
+        static void PushDouble(RealStatePtr L, object o)
+        {
+            double v = (double)o;
+            long lv = (long)v;
+            if (lv == v)
+            {
+                LuaAPI.lua_pushint64(L, lv);
+            }
+            else
+            {
+                LuaAPI.lua_pushnumber(L, v);
+            }
+        }
+
+        static void PushString(RealStatePtr L, object o)
+        {
+            string v = (string)o;
+            LuaAPI.lua_pushstring(L, v);
+        }
+
+        static Dictionary<Type, TypePush> ToLuaMap = new Dictionary<Type, TypePush>
+        {
+            { typeof(bool), PushBool},
+            { typeof(int), PushInt},
+            { typeof(long), PushLong },
+            { typeof(uint), PushUInt },
+            { typeof(ulong), PushULong },
+            { typeof(float), PushFloat },
+            { typeof(double), PushDouble },
+            { typeof(string),PushString }
+        };
+
+        static void PushDataTable(RealStatePtr L, ObjectTranslator translator, DataTable dt)
+        {
+            LuaAPI.lua_newtable(L);
+            int ordinal = 1;
+            foreach (DataRow row in dt.Rows)
+            {
+                LuaAPI.lua_newtable(L);
+                foreach (DataColumn col in dt.Columns)
+                {
+                    object value = row[col];
+                    Type type = value.GetType();
+                    var fn = ToLuaMap.GetValueOrDefault(type);
+                    if (fn != null)
+                    {
+                        fn(L, value);
+                        LuaAPI.xlua_rawseti(L, -2, col.Ordinal + 1);
+                    }
+                }
+                LuaAPI.xlua_rawseti(L, -2, ordinal++);
+            }
+        }
+
+        [MonoPInvokeCallbackAttribute(typeof(LuaCSFunction))]
+        public static int Read(RealStatePtr L)
+        {
+            ObjectTranslator translator = ObjectTranslatorPool.Instance.Find(L);
+            string filePath = "";
             try
             {
-                FileStream stream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                IExcelDataReader excelReader;
+                translator.Get(L, 1, out filePath);
 
-                string ext = Path.GetExtension(filePath);
-                if (ext == ".xls")
+                FileStream fileStream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                using (var reader = ExcelReaderFactory.CreateReader(fileStream))
                 {
-                    excelReader = ExcelReaderFactory.CreateBinaryReader(stream);
+                    var dataset = reader.AsDataSet();
+                    LuaAPI.lua_newtable(L);
+                    int ordinal = 1;
+                    foreach (DataTable t in dataset.Tables)
+                    {
+                        PushDataTable(L, translator, t);
+                        LuaAPI.xlua_rawseti(L, -2, ordinal++);
+                    }
+                    return 1;
                 }
-                else if (ext == ".xlsx")
-                {
-                    excelReader = ExcelReaderFactory.CreateOpenXmlReader(stream);
-                }
-                else
-                {
-                    return false;
-                }
-
-                excelReader.IsFirstRowAsColumnNames = hdr;
-                dataSet = excelReader.AsDataSet();
-
-                excelReader.Close();
-                stream.Close();
-
-                foreach (DataTable t in dataSet.Tables)
-                {
-                    SheetNameList.Add(t.TableName);
-                }
-                return true;
             }
             catch (Exception ex)
             {
-                Form1.WriteInfo(ex.Message, InfoType.Error);
+                LuaAPI.lua_pushboolean(L, false);
+                translator.Push(L, string.Format("ExcelDataReader File {0} {1}", filePath, ex.Message));
+                return 2;
             }
-            return false;
         }
 
-        public DataTable GetFirstTable()
+        static LuaCSFunction templateRead = Read;
+
+        [MonoPInvokeCallback(typeof(LuaCSFunction))]
+        public static int OpenLib(RealStatePtr L)
         {
-            if (dataSet.Tables.Count > 0)
-            {
-                return dataSet.Tables[0];
-            }
-            return null;
+            LuaAPI.lua_newtable(L);
+            LuaAPI.xlua_pushasciistring(L, "read");
+            LuaAPI.lua_pushstdcallcfunction(L, templateRead);
+            LuaAPI.lua_rawset(L, -3);
+            return 1;
         }
     }
 }
